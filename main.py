@@ -4,6 +4,7 @@ import logging
 import asyncio
 
 from telegram import Update
+from telegram.error import RetryAfter
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -31,6 +32,7 @@ async def setprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         minimum, maximum = map(int, context.args)
         if minimum < 0 or maximum < minimum:
             raise ValueError()
+
         context.user_data["price"] = (minimum, maximum)
         await update.message.reply_text(
             f"قیمت ثبت شد: {minimum} تا {maximum} میلیارد تومان"
@@ -43,6 +45,7 @@ async def setarea(update: Update, context: ContextTypes.DEFAULT_TYPE):
         minimum, maximum = map(int, context.args)
         if minimum <= 0 or maximum < minimum:
             raise ValueError()
+
         context.user_data["area"] = (minimum, maximum)
         await update.message.reply_text(
             f"متراژ ثبت شد: {minimum} تا {maximum} متر"
@@ -52,16 +55,19 @@ async def setarea(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def setneighborhood(update: Update, context: ContextTypes.DEFAULT_TYPE):
     neighborhood = " ".join(context.args).strip()
+
     if not neighborhood:
         await update.message.reply_text(
             "مثال: /setneighborhood هزار و یک شب"
         )
         return
+
     context.user_data["neighborhood"] = neighborhood
     await update.message.reply_text(f"محله ثبت شد: {neighborhood}")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = context.user_data
+
     await update.message.reply_text(
         f"قیمت: {data.get('price', 'تعیین نشده')}\n"
         f"متراژ: {data.get('area', 'تعیین نشده')}\n"
@@ -71,8 +77,29 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)
 
+async def initialize_with_retry(app):
+    for attempt in range(5):
+        try:
+            await app.initialize()
+            logging.info("Telegram connection initialized successfully.")
+            return
+
+        except RetryAfter as error:
+            wait_time = float(error.retry_after) + 5
+
+            logging.warning(
+                "Telegram rate limit. Waiting %.1f seconds. Attempt %s/5",
+                wait_time,
+                attempt + 1
+            )
+
+            await asyncio.sleep(wait_time)
+
+    raise RuntimeError("Telegram initialization failed after 5 attempts.")
+
 async def main():
     token = os.getenv("BOT_TOKEN")
+
     if not token:
         raise RuntimeError("BOT_TOKEN تنظیم نشده است.")
 
@@ -85,10 +112,12 @@ async def main():
     app.add_handler(CommandHandler("setneighborhood", setneighborhood))
     app.add_handler(CommandHandler("status", status))
 
-    logging.info("Property bot is starting...")
-    await app.initialize()
+    await initialize_with_retry(app)
+
     await app.start()
     await app.updater.start_polling()
+
+    logging.info("Kerman Property Hunter is running.")
 
     try:
         await asyncio.Event().wait()
